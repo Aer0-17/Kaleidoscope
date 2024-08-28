@@ -1,5 +1,10 @@
 #include "toy.h"
 
+static std::unique_ptr<LLVMContext> TheContext;
+static std::unique_ptr<Module> TheModule;
+static std::unique_ptr<IRBuilder<>> Builder;
+static std::map<std::string, Value *> NamedValues;
+
 //===----------------------------------------------------------------------===//
 // Lexer
 //===----------------------------------------------------------------------===//
@@ -120,7 +125,6 @@ static std::unique_ptr<ExprAST> ParseParenExpr() {
 ///   ::= identifier '(' expression* ')'
 static std::unique_ptr<ExprAST> ParseIdentifierExpr() {
   std::string IdName = IdentifierStr;
-
   getNextToken(); // eat identifier.
 
   if (CurTok != '(') // Simple variable ref.
@@ -228,16 +232,23 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
   if (CurTok != '(')
     return LogErrorP("Expected '(' in prototype");
 
+  // 定义返回类型为double类型
+  Type *ReturnType = Type::getDoubleTy(*TheContext);
+
   std::vector<std::string> ArgNames;
+  std::vector<Type*> ArgTypes;
   while (getNextToken() == tok_identifier)
+  {
     ArgNames.push_back(IdentifierStr);
+    ArgTypes.push_back(Type::getDoubleTy(*TheContext));
+  }
   if (CurTok != ')')
     return LogErrorP("Expected ')' in prototype");
 
   // success.
   getNextToken(); // eat ')'.
 
-  return std::make_unique<PrototypeAST>(FnName, std::move(ArgNames));
+  return std::make_unique<PrototypeAST>(FnName, std::move(ArgNames), ReturnType, std::move(ArgTypes));
 }
 
 /// definition ::= 'def' prototype expression
@@ -257,7 +268,7 @@ static std::unique_ptr<FunctionAST> ParseTopLevelExpr() {
   if (auto E = ParseExpression()) {
     // Make an anonymous proto.
     auto Proto = std::make_unique<PrototypeAST>("__anon_expr",
-                                                std::vector<std::string>());
+                                                std::vector<std::string>(),Type::getDoubleTy(*TheContext), std::vector<Type*>());
     return std::make_unique<FunctionAST>(std::move(Proto), std::move(E));
   }
   return nullptr;
@@ -272,11 +283,6 @@ static std::unique_ptr<PrototypeAST> ParseExtern() {
 //===----------------------------------------------------------------------===//
 // Code Generation
 //===----------------------------------------------------------------------===//
-
-static std::unique_ptr<LLVMContext> TheContext;
-static std::unique_ptr<Module> TheModule;
-static std::unique_ptr<IRBuilder<>> Builder;
-static std::map<std::string, Value *> NamedValues;
 
 // 数值常量
 Value *NumberExprAST::codegen() {
@@ -357,14 +363,34 @@ Function *FunctionAST::codegen() {
     // First, check for an existing function from a previous 'extern' declaration.
   Function *TheFunction = TheModule->getFunction(Proto->getName());
 
-  if (!TheFunction)
+  // If a function already exists, check if it matches the current prototype.
+  if (TheFunction) {
+    if (TheFunction->getReturnType() != Proto->getReturnType() ||
+        TheFunction->arg_size() != Proto->getNumArgs()) {
+      // Error: Signature mismatch.
+      fprintf(stderr, "Function signature mismatch.\n");
+      return nullptr;
+    }
+
+    // Compare argument types.
+    auto ArgTypes = Proto->getArgTypes();
+    auto ArgNames = Proto->getArg();
+    for (unsigned i = 0, e = TheFunction->arg_size(); i != e; ++i) {
+      if ( (TheFunction->getFunctionType()->getParamType(i) != ArgTypes[i]) || 
+           (ArgNames[i].compare(std::string(TheFunction->getArg(i)->getName())) !=0 ) )
+      {
+        fprintf(stderr, "Function argument type or name mismatch.\n");
+        return nullptr;
+      }
+    }
+  } else {
+    // If no existing function, create a new one.
     TheFunction = Proto->codegen();
-
-  if (!TheFunction)
-    return nullptr;
-
+    if (!TheFunction)
+      return nullptr;
+  }
   if (!TheFunction->empty())
-    return (Function*)LogErrorV("Function cannot be redefined.");
+    return (Function*)LogErrorV("Function cannot be redefined.\n");
 
   // Create a new basic block to start insertion into.
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);

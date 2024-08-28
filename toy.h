@@ -102,14 +102,20 @@ public:
 class PrototypeAST {
   std::string Name;
   std::vector<std::string> Args;
+  Type *ReturnType;
+  std::vector<Type*> ArgTypes;
 
 public:
-  PrototypeAST(const std::string &Name, std::vector<std::string> Args)
-      : Name(Name), Args(std::move(Args)) {}
+  PrototypeAST(const std::string &Name, std::vector<std::string> Args, Type *returnType, std::vector<Type*> argTypes)
+      : Name(Name), Args(std::move(Args)), ReturnType(returnType), ArgTypes(std::move(argTypes)) {}
 
   Function *codegen();
 
   const std::string &getName() const { return Name; }
+  Type *getReturnType() const { return ReturnType;  }
+  unsigned getNumArgs() const { return Args.size(); }
+  std::vector<llvm::Type*> getArgTypes() const {  return ArgTypes;  }
+  auto getArg() const { return Args; }
 };
 
 /// FunctionAST - This class represents a function definition itself.
